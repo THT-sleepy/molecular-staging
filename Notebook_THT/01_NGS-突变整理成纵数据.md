@@ -207,4 +207,5 @@ save(NGS_long,file="~/molecular_staging/2.analysis/NGS_long.Rdata")
 ## METexon14 skipping要用HGVSc注释，后面再弄一下(to do how)
 
 ## (Result)
-![得到的表格长这样](.\图片\)
+
+![得到的表格](NGS_long.png)
