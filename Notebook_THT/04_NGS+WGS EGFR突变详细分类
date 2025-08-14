@@ -1,0 +1,194 @@
+## 得到EGFR突变的详细分类表格(what)
+
+## 2025/8/14(when)
+
+## (where)生信技能树 ~/molecular_staging/2.analysis
+## 代码
+```
+##loading packages
+library(dplyr)
+library(tidyr)
+
+##loading files
+load("~/molecular_staging/2.analysis/merge_long.Rdata")
+
+##整理表格
+EGFR_mut_long <- merge_long %>%
+  filter(Hugo_Symbol=="EGFR",ONCOGENIC %in% c("Oncogenic","Likely Oncogenic"))
+EGFR_mut_long <- unique(EGFR_mut_long)
+EGFR_mut_long$HGVSp <- gsub("^p\\.", "", EGFR_mut_long$HGVSp)
+#Varianr Classification太杂了，重新弄一下
+# 第一步：创建辅助数据框，包含每个HGVSp对应的英文分类
+english_terms <- EGFR_mut_long %>%
+  # 筛选英文行（假设英文只包含字母和数字，不包含中文）
+  filter(grepl("^[A-Za-z0-9_]+$", Variant_Classification)) %>%
+  group_by(HGVSp) %>%
+  # 检查每个HGVSp对应的英文分类是否唯一
+  summarise(
+    eng_class = if(n_distinct(Variant_Classification) == 1)
+      first(Variant_Classification) else NA_character_,
+    .groups = "drop"
+  )
+
+# 第二步：创建新列，中文分类替换为对应的英文分类
+EGFR_mut_long <- EGFR_mut_long %>%
+  left_join(english_terms, by = "HGVSp") %>%
+  mutate(
+    Variant_Classification1 = ifelse(
+      # 如果是中文且能找到唯一对应的英文分类
+      grepl("[\\p{Han}]", Variant_Classification, perl = TRUE) & !is.na(eng_class),
+      eng_class,  # 替换为英文
+      Variant_Classification  # 否则保持原样
+    )
+  ) %>%
+  select(-eng_class)  # 移除辅助列
+
+#框内插入突变/框内缺失突变/错义突变
+#错义突变有几个不对的
+#543162 Glu746_Ala750delinsGlnPro "In_Frame_Del"
+#599697 Glu746_Leu747delinsValPro "Others"
+#626955 Glu746_Leu747delinsAspPro "Others
+
+EGFR_mut_long$Variant_Classification1 <- ifelse(EGFR_mut_long$Variant_Classification1 == "框内插入突变","In_Frame_Ins",
+                                         ifelse(EGFR_mut_long$Variant_Classification1 == "框内缺失突变","In_Frame_Del",
+                                         ifelse(EGFR_mut_long$Variant_Classification1 == "错义突变","Missense_Mutation",
+                                                EGFR_mut_long$Variant_Classification1)))
+
+EGFR_mut_long$Variant_Classification1[EGFR_mut_long$Patient_ID==543162] <- "In_Frame_Del"
+EGFR_mut_long$Variant_Classification1[EGFR_mut_long$Patient_ID==599697] <- "Others"
+EGFR_mut_long$Variant_Classification1[EGFR_mut_long$Patient_ID==626955] <- "Others"
+
+
+
+#复杂突变 del和ins数量相同
+EGFR_mut_long$Variant_Classification1[EGFR_mut_long$Variant_Classification1=="复杂突变"] <- "Others"
+
+#插入缺失突变/框内插入缺失突变/缺失突变/非移码突变/框内移码突变
+#589893 Ser768_Val769delinsIleLeu "Others"
+#590154 Glu746_Leu747delinsAspPro "Others"
+#563560 His773delinsAsnProTyr "In_Frame_Ins"
+
+#其它都是 In_Frame_Del
+EGFR_mut_long$Variant_Classification1[EGFR_mut_long$Variant_Classification1 %in%
+                                        c("插入缺失突变","框内插入缺失突变","缺失突变","非移码突变","框内移码突变")] <- "In_Frame_Del"
+EGFR_mut_long$Variant_Classification1[EGFR_mut_long$Patient_ID %in% c(589893,590154)] <- "Others"
+EGFR_mut_long$Variant_Classification1[EGFR_mut_long$Patient_ID == 563560] <- "In_Frame_Ins"
+
+EGFR_mut_long$type <- paste0("exon",EGFR_mut_long$Exon_Number)
+EGFR_mut_long$type <- paste(EGFR_mut_long$type,EGFR_mut_long$Variant_Classification1)
+save(EGFR_mut_long,file="~/molecular_staging/2.analysis/EGFR_mut_long.Rdata")
+
+
+
+
+
+
+
+
+##################1 统计各HGVSp分类的数量#######################################
+# 第一步：按Patient_ID分组，合并HGVSp（去掉p.并用+连接）
+grouped_data <- EGFR_mut_long %>%
+  group_by(Patient_ID,type,ONCOGENIC) %>%
+  summarise(HGVSp_combined = paste(unique(HGVSp), collapse = "+")) %>%  # 用+连接不同的HGVSp
+  ungroup()
+
+## 第二步：统计每种HGVSp组合出现的次数
+hgvsp_stats <- grouped_data %>%
+  group_by(HGVSp_combined,type,ONCOGENIC) %>%
+  summarise(Count = n()) %>%
+  arrange(type,desc(Count)) %>% # 按出现次数降序排列 %>%
+  ungroup()
+
+##点突变
+##exon18
+exon18_point_mutations <- hgvsp_stats %>%
+  filter(str_detect(type,"Missense"),str_detect(type,"exon18")) %>%
+  mutate(exon=18,category=ifelse(str_detect(HGVSp_combined,"719"),"G719X","others"))
+exon18_point_mutations$HGVSp_combined[exon18_point_mutations$HGVSp_combined=="Glu709Lys+Gly719Ala"] <-"Gly719Ala+Glu709Lys"
+exon18_point_mutations$HGVSp_combined[exon18_point_mutations$HGVSp_combined=="Glu709Lys+Gly719Ser"] <- "Gly719Ser+Glu709Lys"
+exon18_point_mutations <- exon18_point_mutations %>%
+  arrange(category,desc(Count)) %>%
+  mutate(`amino acid change`=HGVSp_combined,count=Count,`onco annotation`=ONCOGENIC) %>%
+  select(exon,category,`amino acid change`,count,`onco annotation`)
+
+
+
+
+
+##exon19
+exon19_point_mutations <- hgvsp_stats %>%
+  filter(str_detect(type,"Missense"),str_detect(type,"exon19")) %>%
+  mutate(exon=19,category="others") %>%
+  arrange(category,desc(Count)) %>%
+  mutate(`amino acid change`=HGVSp_combined,count=Count,`onco annotation`=ONCOGENIC) %>%
+  select(exon,category,`amino acid change`,count,`onco annotation`)
+exon19_point_mutations <- exon19_point_mutations[c(1:3,5:8,4),]
+
+##exon20
+exon20_point_mutations <- hgvsp_stats %>%
+  filter(str_detect(type,"Missense"),str_detect(type,"exon20")) %>%
+  mutate(exon=20,category="others") %>%
+  arrange(category,desc(Count)) %>%
+  mutate(`amino acid change`=HGVSp_combined,count=Count,`onco annotation`=ONCOGENIC) %>%
+  select(exon,category,`amino acid change`,count,`onco annotation`)
+exon20_point_mutations <- exon20_point_mutations[c(1:5,9,6:8),]
+
+##exon21
+exon21_point_mutations <- hgvsp_stats %>%
+  filter(str_detect(type,"Missense"),str_detect(type,"exon21")) %>%
+  mutate(exon=21,category=ifelse(str_detect(HGVSp_combined,"858"),"L858R","others")) %>%
+  arrange(category,desc(Count)) %>%
+  mutate(`amino acid change`=HGVSp_combined,count=Count,`onco annotation`=ONCOGENIC) %>%
+  select(exon,category,`amino acid change`,count,`onco annotation`)
+exon21_point_mutations <- exon21_point_mutations[c(1:5,9,6,13,7:8,10:11,16,15,13,12),]
+
+##other exons
+exon_others_point_mutations <- hgvsp_stats %>%
+  filter(str_detect(type,"Missense"),!str_detect(type,"exon19"),!str_detect(type,"exon20"),!str_detect(type,"exon18"),!str_detect(type,"exon21")) %>%
+  mutate(category="others") %>%
+  arrange(category,desc(Count)) %>%
+  mutate(exon=str_extract(type, "(?<=exon)[0-9]+"),`amino acid change`=HGVSp_combined,count=Count,`onco annotation`=ONCOGENIC) %>%
+  select(exon,category,`amino acid change`,count,`onco annotation`)
+exon_others_point_mutations <- exon_others_point_mutations[c(1,3:6,10,9,7:8,2),]
+
+merge_point_mutations <- rbind(exon18_point_mutations,exon19_point_mutations,
+                               exon20_point_mutations,exon21_point_mutations,
+                               exon_others_point_mutations)
+#把氨基酸改成单字母缩写
+aa_table <- data.frame(
+  tri = c("Ala", "Arg", "Asn", "Asp", "Cys", "Glu", "Gln", "Gly", "His",
+          "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp",
+          "Tyr", "Val"),
+  single = c("A", "R", "N", "D", "C", "E", "Q", "G", "H",
+             "I", "L", "K", "M", "F", "P", "S", "T", "W",
+             "Y", "V")
+)
+replace_aa_tri_to_single <- function(input_string, aa_table) {
+  # 找出所有三字母氨基酸缩写
+  tri_matches <- str_extract_all(input_string, "[A-Z][a-z]{2}")[[1]]
+
+  # 只保留在aa_table中存在的有效氨基酸缩写
+  valid_tri <- tri_matches[tri_matches %in% aa_table$tri]
+
+  # 逐个替换
+  for(tri in valid_tri) {
+    single <- aa_table$single[aa_table$tri == tri]
+    input_string <- str_replace_all(input_string, tri, single)
+  }
+
+  return(input_string)
+}
+merge_point_mutations$`amino acid change` <- sapply(merge_point_mutations$`amino acid change`, function(x) replace_aa_tri_to_single(x, aa_table))
+write.csv(merge_point_mutations,"~/molecular_staging/2.analysis/输出的Tables和Figures/egfr_point_mutations.csv",row.names = F)
+
+##Deletions
+deletions <- hgvsp_stats %>%
+  filter(str_detect(type,"In_Frame_Del"))
+deletions$HGVSp_combined <- sapply(deletions$HGVSp_combined, function(x) replace_aa_tri_to_single(x, aa_table))
+
+##Insertions Duplications
+insertions <- hgvsp_stats %>%
+  filter(str_detect(type,"In_Frame_Ins"))
+insertions$HGVSp_combined <- sapply(insertions$HGVSp_combined, function(x) replace_aa_tri_to_single(x, aa_table))
+##Others
+```

@@ -1,0 +1,166 @@
+## 得到突变频率的表格(what)
+
+## 2025/8/14(when)
+## (where)生信技能树 ~/molecular_staging/2.analysis
+
+## 代码(how)
+```
+##loading packages
+library(stringr)
+library(dplyr)
+library(ggplot2)
+
+##loading files
+WGS_maf <- read.delim("~/molecular_staging/1.resources/new_mut_fus_combined.txt")
+WGS_maf <- WGS_maf %>%
+  filter(!is.na(Patient_ID),Patient_ID!=373338)
+WGS_clin <- read.delim("~/molecular_staging/1.resources/clin_info_1000_with_pathway_with_gene.txt")
+WGS_clin <- WGS_clin %>%
+  select(1:24)
+load("~/molecular_staging/2.analysis/NGS_combined.Rdata") ##NGS maf
+NGS_clin <- read.csv("~/molecular_staging/1.resources/NGS临床数据用于R语言输入.csv")
+load("~/molecular_staging/2.analysis/NGS_long.Rdata")
+
+##突变频率柱状图
+Mut_Genes <- c("AKT1","ALK","APC",
+                  "ATM","AXL","BRAF",
+                  "BRCA1","BRCA2","CCND1",
+                  "CDK4","CDK6","CDKN2A",
+                  "CTNNB1","DDR2","EGFR",
+                  "ERBB2","ERBB3","ERBB4",
+                  "ESR1","FGF19","FGF3",
+                  "FGF4","FGFR1","FGFR2",
+                  "FGFR3","FLT3","HRAS",
+                  "IDH1","IDH2","IGF1R",
+                  "JAK1","JAK2","KDR",
+                  "KIT","KRAS","MAP2K1",
+                  "MET","MTOR","MYC",
+                  "NF1","NOTCH1","NRAS",
+                  "NTRK1","NTRK2","NTRK3",
+                  "PDGFRA","PIK3CA",
+                  "PTCH1","PTEN","RAF1","RB1",
+                  "RET","ROS1","SMAD4","SMO",
+                  "STK11","TOP2A","TP53",
+                  "TSC1","TSC2","AR",
+                  "ARAF","BCL2L11","CD74","NRG1")
+Fusion_Genes <- c("ALK","RET","ROS1","CD74","FGFR3","NRG1","NTRK1")
+exon_skipping_gene <- "MET"
+
+##加上外显子序号和突变类型
+WGS_long <- WGS_maf %>%
+  mutate(method="WGS",Exon_Number=str_extract(Exon_Number, "^[^/]+")) %>%
+  select(Patient_ID,Hugo_Symbol,method,HGVSp,ONCOGENIC,Exon_Number,Variant_Classification)
+NGS_long <- NGS_combined %>%
+  mutate(method="NGS",Patient_ID=住院号,Hugo_Symbol=Gene,ONCOGENIC=oncokb_oncogenic)%>%
+  mutate(Exon_Number=外显子序号,Variant_Classification=突变类型) %>%
+  separate(HGVS_P, into = c("prefix", "suffix"), sep = "\\.", remove = FALSE, extra = "merge") %>%
+  mutate(HGVSp = suffix) %>%
+  select(-prefix, -suffix) %>%
+  select(Patient_ID,Hugo_Symbol,method,HGVSp,ONCOGENIC,Exon_Number,Variant_Classification)
+merge_long <- rbind(WGS_long,NGS_long)
+save(merge_long,file="~/molecular_staging/2.analysis/merge_long.Rdata")
+
+
+
+#######################出表格##############################################
+#只保留Driver_Genes,每个患者单个个基因有多个驱动突变时只算一次
+df <- merge_long %>%
+  filter(Hugo_Symbol %in% Mut_Genes) %>%
+  filter(Variant_Classification!="Fusion",Hugo_Symbol!="MET") %>%
+  group_by(Patient_ID, Hugo_Symbol,method) %>%
+  summarize(
+    ONCOGENIC = if (any(ONCOGENIC %in% c("Oncogenic", "Likely Oncogenic"))) {
+      "Oncogenic/Likely Oncogenic"
+    } else {
+      "Unknown"
+    },
+    .groups = "drop"
+  )
+save(df,file="~/molecular_staging/2.analysis/mut_long.Rdata")
+# 假设原始数据框名为 df
+# 示例数据结构：
+# df <- data.frame(
+#   Patient_ID = c("P1", "P2", "P3", "P4", "P5", "P6", "P7"),
+#   Hugo_Symbol = c("TP53", "KRAS", "TP53", "NTRK1", "NTRK2", "KRAS", "BRAF"),
+#   method = c("WGS", "WGS", "NGS", "NGS", "WGS", "NGS", "NGS"),
+#   ONCOGENIC = c("Oncogenic", "Likely Oncogenic", "Oncogenic", "Unknown", "Oncogenic", "Unknown", "Likely Oncogenic")
+# )
+
+# 定义固定总数
+TOTAL_PATIENTS <- 2380
+TOTAL_WGS <- 932
+TOTAL_NGS <- 1522
+
+# 处理数据并计算
+final_table <- df %>%
+  # 合并NTRK基因
+  mutate(
+    Hugo_Symbol = if_else(
+      Hugo_Symbol %in% c("NTRK1", "NTRK2", "NTRK3"),
+      "NTRK1/2/3",
+      Hugo_Symbol
+    )
+  ) %>%
+
+  # 按患者和基因去重
+  distinct(Patient_ID, Hugo_Symbol, method, ONCOGENIC, .keep_all = TRUE) %>%
+
+  # 计算各分组突变数
+  group_by(Hugo_Symbol) %>%
+  summarise(
+    # 计算突变患者数
+    all_total = n_distinct(Patient_ID),
+    all_onco = n_distinct(Patient_ID[ONCOGENIC == "Oncogenic/Likely Oncogenic"]),
+
+    wgs_total = n_distinct(Patient_ID[method == "WGS"]),
+    wgs_onco = n_distinct(Patient_ID[method == "WGS" & ONCOGENIC  == "Oncogenic/Likely Oncogenic"]),
+
+    ngs_total = n_distinct(Patient_ID[method == "NGS"]),
+    ngs_onco = n_distinct(Patient_ID[method == "NGS" & ONCOGENIC == "Oncogenic/Likely Oncogenic"]),
+
+    # 计算总突变率用于排序（不显示）
+    total_rate = all_onco / TOTAL_PATIENTS
+  ) %>%
+
+  # 格式化输出
+  mutate(
+    mutation_rate_all = sprintf("%.1f%% (%d/%d)", (all_total/TOTAL_PATIENTS)*100, all_total, TOTAL_PATIENTS),
+    oncogenic_rate_all = sprintf("%.1f%% (%d/%d)", (all_onco/TOTAL_PATIENTS)*100, all_onco, TOTAL_PATIENTS),
+
+    mutation_rate_wgs = sprintf("%.1f%% (%d/%d)", (wgs_total/TOTAL_WGS)*100, wgs_total, TOTAL_WGS),
+    oncogenic_rate_wgs = sprintf("%.1f%% (%d/%d)", (wgs_onco/TOTAL_WGS)*100, wgs_onco, TOTAL_WGS),
+
+    mutation_rate_ngs = sprintf("%.1f%% (%d/%d)", (ngs_total/TOTAL_NGS)*100, ngs_total, TOTAL_NGS),
+    oncogenic_rate_ngs = sprintf("%.1f%% (%d/%d)", (ngs_onco/TOTAL_NGS)*100, ngs_onco, TOTAL_NGS)
+  ) %>%
+
+  # 按总突变率降序排列
+  arrange(desc(total_rate)) %>%
+
+  # 选择最终输出列
+  select(
+    Hugo_Symbol,
+    mutation_rate_all, oncogenic_rate_all,
+    mutation_rate_wgs, oncogenic_rate_wgs,
+    mutation_rate_ngs, oncogenic_rate_ngs
+  ) %>%
+
+  # 处理缺失值
+  mutate(across(
+    contains("rate"),
+    ~ ifelse(is.na(.), sprintf("0.0%% (0/%d)",
+                               case_when(
+                                 grepl("_all", cur_column()) ~ TOTAL_PATIENTS,
+                                 grepl("_wgs", cur_column()) ~ TOTAL_WGS,
+                                 grepl("_ngs", cur_column()) ~ TOTAL_NGS
+                               )), .)
+  ))
+colnames(final_table) <- c("Gene","Mutation_Rate_Total","Oncogenic_Rate_Total",
+                           "Mutation_Rate_WGS","Oncogenic_Rate_WGS",
+                           "Mutation_Rate_Panel","Oncogenic_Rate_Panel")
+# 查看结果
+print(final_table)
+
+# 导出CSV
+write.csv(final_table, "~/molecular_staging/2.analysis/gene_mutation_rates_sorted.csv", row.names = FALSE)
+```

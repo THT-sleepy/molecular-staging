@@ -1,0 +1,253 @@
+## 得到EGFR,TP53,KRAS突变和临床指标相关性的表格(what)
+
+## 2025/8/14(when)
+
+## (where)生信技能树 ~/molecular_staging/2.analysis
+## 代码
+
+```
+
+##需要的信息是性别，年龄，吸烟史，分期(I,II-IV),亚型(低到中,高),EGFR突变状态,TP53突变状态,KRAS突变状态
+#突变信息
+load("~/molecular_staging/2.analysis/mut_long.Rdata")
+#临床信息
+load("~/molecular_staging/2.analysis/config_986.Rdata")
+WGS_clin <- read.delim("~/molecular_staging/1.resources/clin_info_1000_with_pathway_with_gene.txt")
+WGS_clin <- WGS_clin %>%
+  select(1:24) %>%
+  filter(Sample_ID %in% config_986)
+
+NGS_raw_table <- read.csv("~/molecular_staging/1.resources/NGS用于R语言输入.csv")
+NGS_clin <- read.csv("~/molecular_staging/1.resources/NGS临床数据用于R语言输入.csv")
+NGS_clin <- NGS_clin %>%
+  filter(住院号 %in% NGS_raw_table$住院号,新辅助==0)
+##得到合并的临床信息表格
+clin_wgs <- WGS_clin %>%
+  mutate(method="WGS",Stage=Stage3,Smoking=ifelse(Smoking_history_brief=="Never",0,1)) %>%
+  select(Patient_ID,method,Sex,Age,Smoking,Stage,RFS,RFS_E,OS,OS_E,Subtype,Subtype_short)
+clin_ngs <- NGS_clin %>%
+  mutate(method="Panel",
+         Patient_ID=住院号,Sex=ifelse(gender==1,"Male","Female"),
+         Age=年龄,Smoking=smoking,
+         RFS_E=RFSS,
+         OS_E=OSS,
+         Stage=ifelse(stage3=="AIS/MIA","AAH/AIS/MIA",
+               ifelse(stage3=="III治疗后改变","III",stage3)),
+         Subtype=ifelse(SUBGROUP1 %in% c("AIS","MIA"),0,
+                                 ifelse(SUBGROUP1 == "APA","Acinar",
+                                        ifelse(SUBGROUP1 == "APA/PPA","Acinar/Papillary",
+                                               ifelse(SUBGROUP1 == "IMA","Invasive_mucinous",
+                                                      ifelse(SUBGROUP1 == "LPA","Lepidic",
+                                                             ifelse(SUBGROUP1 == "MPA","Micropapillary",
+                                                                    ifelse(SUBGROUP1 == "PPA","Papillary",
+                                                                           ifelse(SUBGROUP1 == "SPA","Solid","Unreported")))))))),
+         Subtype_short=ifelse(Subtype=="Lepidic","Lepidic",
+                              ifelse(Subtype %in% c("Acinar","Papillary","Invasive_mucinous"),"Acinar/Papillary/IMA",
+                                     ifelse(Subtype %in% c("Micropapillary","Solid"),"Micropapillary/Solid",
+                                            ifelse(Subtype==0,"AAH/AIS/MIA","Unreported")))))%>%
+  select(Patient_ID,method,Sex,Age,Smoking,Stage,RFS,RFS_E,OS,OS_E,Subtype,Subtype_short)
+
+clin_merge <- rbind(clin_ngs,clin_wgs)
+##WGS/NGS重合患者，取随访时间更长者
+# 步骤1: 首先对表格的所有行进行去重，保留重复者的第一行
+clin_merge <-  clin_merge[!duplicated( clin_merge), ]
+
+# 步骤2: 对于Patient_ID有重复的行，只保留OS最大的行
+# 如果OS相同，则保留第一个出现的行
+clin_merge <- clin_merge %>%
+  group_by(Patient_ID) %>%
+  mutate(all_na = all(is.na(OS))) %>% # 标记OS全为NA的组
+  arrange(ifelse(all_na, 1, -OS), .by_group = TRUE) %>%  # 全NA组按原顺序，其他按OS降序
+  filter(row_number() == 1) %>%
+  select(-all_na) %>% # 移除临时列
+  ungroup()
+##这里是2380个患者
+#再去掉浸润前的患者
+clin_merge <- clin_merge %>%
+  filter(Stage != "AAH/AIS/MIA")
+##剩下2233个患者
+
+
+
+
+##问题来了,AAH/AIS/MIA的是要删掉吗?应该是要的
+clin_merge1 <- clin_merge %>%
+  mutate(Age=ifelse(Age<60,"<60",">=60"),
+         `Smoking history`=ifelse(Smoking==1,"Ever","Never"),
+          Stage=ifelse(Stage=="I","I","II-IV"),
+          Differentiation=ifelse(Subtype_short=="Micropapillary/Solid","poor","well to mod")) %>%
+  select(-method,-Smoking,-OS,-OS_E,-RFS,-RFS_E,-Subtype)
+##添加EGFR突变与否列
+egfr_mut_long <- df %>%
+  filter(ONCOGENIC=="Oncogenic/Likely Oncogenic",Hugo_Symbol=="EGFR") %>%
+  select(-method) %>%
+  distinct()
+clin_merge1 <- clin_merge1 %>%
+  left_join(egfr_mut_long,by=c("Patient_ID")) %>%
+  mutate(EGFR_mut_status=ifelse(is.na(ONCOGENIC),"WT","MUT")) %>%
+  select(-ONCOGENIC,-Hugo_Symbol)
+##添加TP53突变与否列
+tp53_mut_long <- df %>%
+  filter(ONCOGENIC=="Oncogenic/Likely Oncogenic",Hugo_Symbol=="TP53") %>%
+  select(-method) %>%
+  distinct()
+clin_merge1 <- clin_merge1 %>%
+  left_join(tp53_mut_long,by=c("Patient_ID")) %>%
+  mutate(TP53_mut_status=ifelse(is.na(ONCOGENIC),"WT","MUT"))%>%
+  select(-ONCOGENIC,-Hugo_Symbol)
+##添加KRAS突变与否列
+kras_mut_long <- df %>%
+  filter(ONCOGENIC=="Oncogenic/Likely Oncogenic",Hugo_Symbol=="KRAS") %>%
+  select(-method) %>%
+  distinct()
+clin_merge1 <- clin_merge1 %>%
+  left_join(kras_mut_long,by=c("Patient_ID")) %>%
+  mutate(KRAS_mut_status=ifelse(is.na(ONCOGENIC),"WT","MUT"))%>%
+  select(-ONCOGENIC,-Hugo_Symbol)
+
+##统计检验-性别与EGFR突变
+table(clin_merge1$Sex,clin_merge1$EGFR_mut_status)
+#MUT  WT
+#Female 975 324
+#Male   534 440
+chisq.test(table(clin_merge1$Sex,clin_merge1$EGFR_mut_status))
+#p-value < 2.2e-16
+
+#性别与TP53突变
+table(clin_merge1$Sex,clin_merge1$TP53_mut_status)
+#MUT  WT
+#Female 334 965
+#Male   370 604
+chisq.test(table(clin_merge1$Sex,clin_merge1$TP53_mut_status))
+#p-value < 5.041e-10
+
+#性别与KRAS突变
+table(clin_merge1$Sex,clin_merge1$KRAS_mut_status)
+#MUT   WT
+#Female   45 1254
+#Male    131  843
+chisq.test(table(clin_merge1$Sex,clin_merge1$KRAS_mut_status))
+#p-value < 2.2e-16
+
+##年龄与突变
+#年龄与EGFR突变
+table(clin_merge1$Age,clin_merge1$EGFR_mut_status)
+#MUT  WT
+#<60  672 341
+#>=60 837 423
+chisq.test(table(clin_merge1$Age,clin_merge1$EGFR_mut_status))
+#p-value = 0.9992
+
+#年龄和TP53突变
+table(clin_merge1$Age,clin_merge1$TP53_mut_status)
+#MUT  WT
+#<60  320 693
+#>=60 384 876
+chisq.test(clin_merge1$Age,clin_merge1$TP53_mut_status)
+# p-value = 0.5997
+
+#年龄和KRAS突变
+table(clin_merge1$Age,clin_merge1$KRAS_mut_status)
+#MUT   WT
+#<60    58  955
+#>=60  118 1142
+chisq.test(clin_merge1$Age,clin_merge1$KRAS_mut_status)
+# p-value = 0.001645
+
+#吸烟和EGFR突变
+table(clin_merge1$`Smoking history`,clin_merge1$EGFR_mut_status)
+#MUT   WT
+#Ever   346  304
+#Never 1163  460
+chisq.test(table(clin_merge1$`Smoking history`,clin_merge1$EGFR_mut_status))
+# p-value = 2.2e-16
+
+#吸烟和TP53突变
+table(clin_merge1$`Smoking history`,clin_merge1$TP53_mut_status)
+#MUT   WT
+#Ever   267  383
+#Never  437 1186
+chisq.test(table(clin_merge1$`Smoking history`,clin_merge1$TP53_mut_status))
+# p-value = 6.015e-11
+
+#吸烟和KRAS突变
+table(clin_merge1$`Smoking history`,clin_merge1$KRAS_mut_status)
+#MUT   WT
+#Ever   103  547
+#Never   73 1550
+chisq.test(table(clin_merge1$`Smoking history`,clin_merge1$KRAS_mut_status))
+# p-value < 2.2e-16
+
+#分期和EGFR突变 2 x n列联表
+table(clin_merge1$Stage,clin_merge1$EGFR_mut_status)
+#MUT   WT
+#I     1200  525
+#II-IV  309  239
+chisq.test(table(clin_merge1$Stage,clin_merge1$EGFR_mut_status))
+# p-value = 1.727e-08
+
+#分期和TP53突变 2 x n列联表
+table(clin_merge1$Stage,clin_merge1$TP53_mut_status)
+#MUT   WT
+#I      442 1283
+#II-IV  262  286
+chisq.test(table(clin_merge1$Stage,clin_merge1$TP53_mut_status))
+# p-value = p-value < 2.2e-16
+
+#分期和KRAS突变 2 x n列联表
+table(clin_merge1$Stage,clin_merge1$KRAS_mut_status)
+#MUT   WT
+#I      127 1598
+#II-IV   49  499
+chisq.test(table(clin_merge1$Stage,clin_merge1$KRAS_mut_status))
+# p-value = 0.2656
+
+#分化和EGFR突变
+table(clin_merge1$Differentiation,clin_merge1$EGFR_mut_status)
+#MUT   WT
+#poor         105  179
+#well to mod 1404  585
+chisq.test(table(clin_merge1$Differentiation,clin_merge1$EGFR_mut_status))
+#p-value < 2.2e-16
+
+#分化和TP53突变
+table(clin_merge1$Differentiation,clin_merge1$TP53_mut_status)
+#MUT   WT
+#poor         151  133
+#well to mod  553 1436
+chisq.test(table(clin_merge1$Differentiation,clin_merge1$TP53_mut_status))
+# p-value < 2.2e-16
+
+#分化和KRAS突变
+table(clin_merge1$Differentiation,clin_merge1$KRAS_mut_status)
+#MUT   WT
+#poor          39  245
+#well to mod  137 1852
+chisq.test(table(clin_merge1$Differentiation,clin_merge1$KRAS_mut_status))
+# p-value = 8.915e-05
+
+#EGFR突变和KRAS突变
+table(clin_merge1$EGFR_mut_status,clin_merge1$KRAS_mut_status)
+#MUT   WT
+#MUT    7 1502
+#WT   169  595
+chisq.test(table(clin_merge1$EGFR_mut_status,clin_merge1$KRAS_mut_status))
+
+#EGFR突变和TP53突变
+table(clin_merge1$EGFR_mut_status,clin_merge1$TP53_mut_status)
+#MUT   WT
+#MUT  497 1012
+#WT   207  557
+chisq.test(table(clin_merge1$EGFR_mut_status,clin_merge1$TP53_mut_status))
+
+#KRAS突变和TP53突变
+table(clin_merge1$KRAS_mut_status,clin_merge1$TP53_mut_status)
+#MUT   WT
+#MUT   51  125
+#WT   653 1444
+chisq.test(table(clin_merge1$KRAS_mut_status,clin_merge1$TP53_mut_status))
+
+
+sessionInfo()
+
+```

@@ -1,0 +1,72 @@
+## 得到KRAS突变的详细分类表格(what)
+
+## 2025/8/14(when)
+
+## (where)生信技能树 ~/molecular_staging/2.analysis
+## 代码
+```
+##loading packages
+library(dplyr)
+library(tidyr)
+
+##loading files
+load("~/molecular_staging/2.analysis/merge_long.Rdata")
+
+##整理表格
+KRAS_mut_long <- merge_long %>%
+  filter(Hugo_Symbol=="KRAS",ONCOGENIC %in% c("Oncogenic","Likely Oncogenic"))
+KRAS_mut_long <- unique(KRAS_mut_long)
+KRAS_mut_long$HGVSp <- gsub("^p\\.", "", KRAS_mut_long$HGVSp)
+KRAS_mut_long$Variant_Classification[KRAS_mut_long$Variant_Classification=="错义突变"] <- "Missense_Mutation"
+KRAS_mut_long$Variant_Classification[KRAS_mut_long$Patient_ID %in% c(571225,649024)] <- "In_Frame_Ins"
+
+
+##################1 统计各HGVSp分类的数量#######################################
+# 第一步：按Patient_ID分组，合并HGVSp（去掉p.并用+连接）
+grouped_data <- KRAS_mut_long %>%
+  group_by(Patient_ID,ONCOGENIC) %>%
+  summarise(HGVSp_combined = paste(unique(HGVSp), collapse = "+")) %>%  # 用+连接不同的HGVSp
+  ungroup()
+
+## 第二步：统计每种HGVSp组合出现的次数
+hgvsp_stats <- grouped_data %>%
+  group_by(HGVSp_combined,ONCOGENIC) %>%
+  summarise(Count = n()) %>%
+  arrange(desc(Count)) %>% # 按出现次数降序排列 %>%
+  ungroup()
+
+aa_table <- data.frame(
+  tri = c("Ala", "Arg", "Asn", "Asp", "Cys", "Glu", "Gln", "Gly", "His",
+          "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp",
+          "Tyr", "Val"),
+  single = c("A", "R", "N", "D", "C", "E", "Q", "G", "H",
+             "I", "L", "K", "M", "F", "P", "S", "T", "W",
+             "Y", "V")
+)
+replace_aa_tri_to_single <- function(input_string, aa_table) {
+  # 找出所有三字母氨基酸缩写
+  tri_matches <- str_extract_all(input_string, "[A-Z][a-z]{2}")[[1]]
+
+  # 只保留在aa_table中存在的有效氨基酸缩写
+  valid_tri <- tri_matches[tri_matches %in% aa_table$tri]
+
+  # 逐个替换
+  for(tri in valid_tri) {
+    single <- aa_table$single[aa_table$tri == tri]
+    input_string <- str_replace_all(input_string, tri, single)
+  }
+
+  return(input_string)
+}
+hgvsp_stats$HGVSp_combined <- sapply(hgvsp_stats$HGVSp_combined, function(x) replace_aa_tri_to_single(x, aa_table))
+hgvsp_stats <- hgvsp_stats %>%
+  mutate(category=ifelse(str_detect(HGVSp_combined,"12"),"G12X",
+                  ifelse(str_detect(HGVSp_combined,"13"),"G13X",
+                  ifelse(str_detect(HGVSp_combined,"61"),"Q61X","others")))) %>%
+  mutate(`amino acid change`=HGVSp_combined,count=Count) %>%
+  select(`amino acid change`,category,count) %>%
+  arrange(category,desc(count))
+write.csv(hgvsp_stats,"~/molecular_staging/2.analysis/输出的Tables和Figures/kras_mutations.csv",row.names = F)
+
+##查看7个EGFR和KRAS共突变的组合
+```
